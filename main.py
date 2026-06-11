@@ -131,14 +131,11 @@ with tab2:
     st.header("Import Media Queries")
     
     col1, col2 = st.columns([2, 1])
-    
+
+    # Data source selection
     with col1:
-        uploaded_file = st.file_uploader(
-            "Upload CSV file with media queries",
-            type="csv",
-            help="Supported columns: SUMMARY, CATEGORY, QUERY, QUESTIONS, MEDIA OUTLET, DA, NAME, EMAIL"
-        )
-    
+        data_source = st.selectbox("Data Source", ["Upload CSV", "Public Google Sheet (CSV export)", "Google Sheet - Service Account"], key="data_source_selection")
+
     with col2:
         if st.button("📋 Load Sample Data", use_container_width=True):
             sample_data = [
@@ -177,9 +174,17 @@ with tab2:
             st.session_state.filtered_queries = sample_data
             st.success(f"Loaded {len(sample_data)} sample queries!")
     
-    if uploaded_file is not None:
-        try:
-            df = pd.read_csv(uploaded_file)
+    # Handle CSV upload
+    if data_source == "Upload CSV":
+        uploaded_file = st.file_uploader(
+            "Upload CSV file with media queries",
+            type="csv",
+            help="Supported columns: SUMMARY, CATEGORY, QUERY, QUESTIONS, MEDIA OUTLET, DA, NAME, EMAIL"
+        )
+
+        if uploaded_file is not None:
+            try:
+                df = pd.read_csv(uploaded_file)
             
             # Normalize column names
             df.columns = df.columns.str.strip().str.upper()
@@ -237,8 +242,160 @@ with tab2:
             
             st.dataframe(df.head(10), use_container_width=True)
         
-        except Exception as e:
-            st.error(f"Error processing CSV: {str(e)}")
+            except Exception as e:
+                st.error(f"Error processing CSV: {str(e)}")
+
+    # Handle Public Google Sheet (no auth) via CSV export
+    elif data_source == "Public Google Sheet (CSV export)":
+        st.info("This option reads a Google Sheet exported as CSV. The sheet must be shared publicly or set to 'Anyone with the link can view'.")
+        sheet_id = st.text_input("Google Sheet ID (the long id in the sheet URL)", key="public_sheet_id")
+        gid = st.text_input("GID (sheet gid, default 0)", value="0", key="public_sheet_gid")
+
+        if st.button("Load Public Sheet", key="load_public_sheet"):
+            try:
+                csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+                df = pd.read_csv(csv_url)
+                df.columns = df.columns.str.strip().str.upper()
+                # proceed with same normalization and loading as CSV
+                _ = df  # continue to reuse existing logic below
+
+                # reuse column mapping and normalization
+                column_mapping = {
+                    "SUMMARY": "SUMMARY",
+                    "TITLE": "SUMMARY",
+                    "CATEGORY": "CATEGORY",
+                    "TOPIC": "CATEGORY",
+                    "NAME": "NAME",
+                    "REPORTER": "NAME",
+                    "JOURNALIST": "NAME",
+                    "EMAIL": "EMAIL",
+                    "MEDIA OUTLET": "MEDIA_OUTLET",
+                    "OUTLET": "MEDIA_OUTLET",
+                    "SOURCE": "MEDIA_OUTLET",
+                    "QUERY": "QUERY",
+                    "DESCRIPTION": "QUERY",
+                    "QUESTIONS": "QUESTIONS",
+                    "DA": "DA",
+                    "DOMAIN AUTHORITY": "DA"
+                }
+
+                for old_col, new_col in column_mapping.items():
+                    if old_col in df.columns:
+                        df[new_col] = df[old_col]
+
+                for col in ["SUMMARY", "CATEGORY", "QUERY", "DA", "MEDIA_OUTLET", "NAME"]:
+                    if col not in df.columns:
+                        df[col] = ""
+
+                records = df[["SUMMARY", "CATEGORY", "QUERY", "QUESTIONS", "MEDIA_OUTLET", "NAME", "EMAIL", "DA"]].to_dict("records")
+
+                if st.session_state.all_queries:
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        if st.button("Append to existing", use_container_width=True, key="append_public"):
+                            st.session_state.all_queries.extend(records)
+                            st.session_state.filtered_queries = st.session_state.all_queries
+                            st.success(f"Appended {len(records)} records!")
+                    with col2:
+                        if st.button("Overwrite existing", use_container_width=True, key="overwrite_public"):
+                            st.session_state.all_queries = records
+                            st.session_state.filtered_queries = records
+                            st.success(f"Loaded {len(records)} records (previous cleared)")
+                else:
+                    st.session_state.all_queries = records
+                    st.session_state.filtered_queries = records
+                    st.success(f"Successfully loaded {len(records)} media queries!")
+
+                st.dataframe(df.head(10), use_container_width=True)
+
+            except Exception as e:
+                st.error(f"Error loading public sheet: {str(e)}")
+
+    # Handle Service Account Google Sheet via gspread
+    else:
+        st.info("Use a Google Service Account JSON to access private sheets. Upload the JSON below and enter the Sheet ID and GID.")
+        sa_file = st.file_uploader("Upload service account JSON", type=["json"], key="sa_upload")
+        sheet_id = st.text_input("Google Sheet ID", key="sa_sheet_id")
+        gid = st.text_input("GID (sheet gid, default 0)", value="0", key="sa_sheet_gid")
+
+        if st.button("Load Private Sheet", key="load_private_sheet"):
+            if not sa_file:
+                st.error("Please upload a service account JSON file first")
+            elif not sheet_id:
+                st.error("Please provide the Google Sheet ID")
+            else:
+                try:
+                    import gspread
+                    from google.oauth2.service_account import Credentials
+
+                    creds_info = json.load(sa_file)
+                    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+                    creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+                    client = gspread.authorize(creds)
+
+                    sh = client.open_by_key(sheet_id)
+                    worksheet = None
+                    for ws in sh.worksheets():
+                        if str(ws._properties.get("sheetId")) == str(gid):
+                            worksheet = ws
+                            break
+                    if worksheet is None:
+                        worksheet = sh.get_worksheet(0)
+
+                    data = worksheet.get_all_records()
+                    df = pd.DataFrame(data)
+                    df.columns = df.columns.str.strip().str.upper()
+
+                    column_mapping = {
+                        "SUMMARY": "SUMMARY",
+                        "TITLE": "SUMMARY",
+                        "CATEGORY": "CATEGORY",
+                        "TOPIC": "CATEGORY",
+                        "NAME": "NAME",
+                        "REPORTER": "NAME",
+                        "JOURNALIST": "NAME",
+                        "EMAIL": "EMAIL",
+                        "MEDIA OUTLET": "MEDIA_OUTLET",
+                        "OUTLET": "MEDIA_OUTLET",
+                        "SOURCE": "MEDIA_OUTLET",
+                        "QUERY": "QUERY",
+                        "DESCRIPTION": "QUERY",
+                        "QUESTIONS": "QUESTIONS",
+                        "DA": "DA",
+                        "DOMAIN AUTHORITY": "DA"
+                    }
+
+                    for old_col, new_col in column_mapping.items():
+                        if old_col in df.columns:
+                            df[new_col] = df[old_col]
+
+                    for col in ["SUMMARY", "CATEGORY", "QUERY", "DA", "MEDIA_OUTLET", "NAME"]:
+                        if col not in df.columns:
+                            df[col] = ""
+
+                    records = df[["SUMMARY", "CATEGORY", "QUERY", "QUESTIONS", "MEDIA_OUTLET", "NAME", "EMAIL", "DA"]].to_dict("records")
+
+                    if st.session_state.all_queries:
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            if st.button("Append to existing", use_container_width=True, key="append_private"):
+                                st.session_state.all_queries.extend(records)
+                                st.session_state.filtered_queries = st.session_state.all_queries
+                                st.success(f"Appended {len(records)} records!")
+                        with col2:
+                            if st.button("Overwrite existing", use_container_width=True, key="overwrite_private"):
+                                st.session_state.all_queries = records
+                                st.session_state.filtered_queries = records
+                                st.success(f"Loaded {len(records)} records (previous cleared)")
+                    else:
+                        st.session_state.all_queries = records
+                        st.session_state.filtered_queries = records
+                        st.success(f"Successfully loaded {len(records)} media queries!")
+
+                    st.dataframe(df.head(10), use_container_width=True)
+
+                except Exception as e:
+                    st.error(f"Error loading private sheet: {str(e)}")
 
 with tab1:
     if not st.session_state.all_queries:
