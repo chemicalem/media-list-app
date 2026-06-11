@@ -45,6 +45,57 @@ if "expert_bio" not in st.session_state:
     st.session_state.expert_bio = ""
 if "selected_query_idx" not in st.session_state:
     st.session_state.selected_query_idx = None
+if "auto_loaded_default_sheet" not in st.session_state:
+    st.session_state.auto_loaded_default_sheet = False
+
+
+def _normalize_and_load_df(df):
+    df.columns = df.columns.str.strip().str.upper()
+    column_mapping = {
+        "SUMMARY": "SUMMARY",
+        "TITLE": "SUMMARY",
+        "CATEGORY": "CATEGORY",
+        "TOPIC": "CATEGORY",
+        "NAME": "NAME",
+        "REPORTER": "NAME",
+        "JOURNALIST": "NAME",
+        "EMAIL": "EMAIL",
+        "MEDIA OUTLET": "MEDIA_OUTLET",
+        "OUTLET": "MEDIA_OUTLET",
+        "SOURCE": "MEDIA_OUTLET",
+        "QUERY": "QUERY",
+        "DESCRIPTION": "QUERY",
+        "QUESTIONS": "QUESTIONS",
+        "DA": "DA",
+        "DOMAIN AUTHORITY": "DA"
+    }
+
+    for old_col, new_col in column_mapping.items():
+        if old_col in df.columns:
+            df[new_col] = df[old_col]
+
+    for col in ["SUMMARY", "CATEGORY", "QUERY", "DA", "MEDIA_OUTLET", "NAME"]:
+        if col not in df.columns:
+            df[col] = ""
+
+    records = df[["SUMMARY", "CATEGORY", "QUERY", "QUESTIONS", "MEDIA_OUTLET", "NAME", "EMAIL", "DA"]].to_dict("records")
+    st.session_state.all_queries = records
+    st.session_state.filtered_queries = records
+
+
+# Auto-load a default public Google Sheet once on first run
+DEFAULT_PUBLIC_SHEET_ID = "1DI1rWXDl76MCvp-HomYWPokPoPUUxky6_fLlLNLo6dI"
+DEFAULT_PUBLIC_SHEET_GID = "0"
+if not st.session_state.all_queries and not st.session_state.auto_loaded_default_sheet:
+    try:
+        csv_url = f"https://docs.google.com/spreadsheets/d/{DEFAULT_PUBLIC_SHEET_ID}/export?format=csv&gid={DEFAULT_PUBLIC_SHEET_GID}"
+        df_default = pd.read_csv(csv_url)
+        _normalize_and_load_df(df_default)
+        st.session_state.auto_loaded_default_sheet = True
+        st.experimental_rerun()
+    except Exception:
+        # Don't raise; leave the UI for manual import if auto-load fails
+        st.session_state.auto_loaded_default_sheet = True
 
 # Header
 col1, col2 = st.columns([1, 5])
